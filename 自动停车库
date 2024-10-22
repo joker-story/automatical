@@ -1,0 +1,553 @@
+#自动停车库，仅供参考  
+
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Servo.h>
+#include <Stepper.h>
+
+//定义RFID引脚
+//MOSI 11; MISO 12; SCK 13;
+#define SS_PIN 8
+#define RST_PIN 17
+
+// 定义舵机引脚
+#define YAW_PIN 5
+#define CLAW_PIN 9
+#define GATE_PIN 10
+
+// 定义步进电机引脚
+#define STEPPER_STEP_PIN 14
+#define STEPPER_DIR_PIN 15
+#define STEPPER_ENABLE_PIN 16
+
+// 定义齿轮齿条电机引脚
+#define LINEAR_ACTUATOR_PIN1 18
+#define LINEAR_ACTUATOR_PIN2 19
+#define LINEAR_STBY_PIN  0
+#define LINEAR_PWM 3
+
+// 定义舵机角度范围
+#define SERVO_MIN_ANGLE 60
+#define SERVO_MAX_ANGLE 0
+
+// 定义步进电机参数
+#define STEPS_PER_REVOLUTION 800
+#define LINEAR_ACTUATOR_TRAVEL 300
+#define STEPS_MAX 120000
+
+// 定义门打开和关闭的角度
+#define GATE_OPEN_ANGLE 180
+#define GATE_CLOSE_ANGLE 155//155
+
+// 定义RFID卡对应的固定位置
+#define POSITION_1_RFID "RFID_1"
+#define POSITION_2_RFID "RFID_2"
+#define POSITION_3_RFID "RFID_3"
+#define POSITION_4_RFID "RFID_4"
+#define POSITION_5_RFID "RFID_5"
+#define POSITION_6_RFID "RFID_6"
+#define POSITION_7_RFID "RFID_7"
+#define POSITION_8_RFID "RFID_8"
+#define POSITION_9_RFID "RFID_9"
+#define POSITION_10_RFID "RFID_10"
+
+//定义层高
+#define FLOOR_1 0
+#define FLOOR_2 85
+#define FLOOR_3 170
+#define FLOOR_4 255
+
+//定义转角
+#define YAW_ANGLE_0 180
+#define YAW_ANGLE_1 -62
+#define YAW_ANGLE_2 -90
+#define YAW_ANGLE_3 -120
+#define YAW_ANGLE_4 -147
+#define YAW_ANGLE_5 180
+#define YAW_ANGLE_6 142
+#define YAW_ANGLE_7 113
+#define YAW_ANGLE_8 86
+#define YAW_ANGLE_9 60
+
+// 定义固定位置的机械臂坐标 58 86 100 126
+// -62 -88 -120 -147     +60 +88 +113 +142
+#define POSITION_1_YAW_ANGLE YAW_ANGLE_0 + YAW_ANGLE_1
+#define POSITION_1_LINEAR_POS 0
+
+#define POSITION_2_YAW_ANGLE YAW_ANGLE_0 + YAW_ANGLE_2
+#define POSITION_2_LINEAR_POS 0
+
+#define POSITION_3_YAW_ANGLE YAW_ANGLE_0 + YAW_ANGLE_3
+#define POSITION_3_LINEAR_POS 0
+
+#define POSITION_4_YAW_ANGLE YAW_ANGLE_0 + YAW_ANGLE_4
+#define POSITION_4_LINEAR_POS 0
+
+#define POSITION_5_YAW_ANGLE YAW_ANGLE_0 + YAW_ANGLE_6
+#define POSITION_5_LINEAR_POS 0
+
+#define POSITION_6_YAW_ANGLE YAW_ANGLE_0 + YAW_ANGLE_7
+#define POSITION_6_LINEAR_POS 0
+
+#define POSITION_7_YAW_ANGLE YAW_ANGLE_0 + YAW_ANGLE_8
+#define POSITION_7_LINEAR_POS 0
+
+#define POSITION_8_YAW_ANGLE YAW_ANGLE_0 + YAW_ANGLE_9
+#define POSITION_8_LINEAR_POS 0
+
+#define POSITION_9_YAW_ANGLE YAW_ANGLE_0
+#define POSITION_9_LINEAR_POS 0
+
+#define POSITION_10_YAW_ANGLE YAW_ANGLE_0
+#define POSITION_10_LINEAR_POS 255
+// ... 其他位置的机械臂坐标
+
+//声明RFID读卡器对象
+MFRC522 rfid(SS_PIN, RST_PIN);
+byte nuidPICC[4]; //存储读取的UID
+static bool bicycle_state[10]={1,1,1,1,1,1,1,1,1,1};//存取自行车放或取
+
+#define TAKE_BYCICLE_PRE 0
+#define PUT_BYCICLE_PRE 1
+
+#define R_DIR_VELOCITY 125
+#define R_DIR_WHOLETIME 600
+
+#define yaw_orgin YAW_ANGLE_0
+#define yaw_behind 15
+
+#define GEAR_RATIO 0.75
+
+// 声明舵机对象
+Servo yawServo;
+Servo clawServo;
+Servo gateServo;
+
+// 声明步进电机对象
+Stepper stepper(STEPS_PER_REVOLUTION, STEPPER_DIR_PIN, STEPPER_STEP_PIN);
+static int currentposition=0;
+float yaw_right_angle = yaw_orgin;
+
+// 初始化函数
+void setup() {
+  //初始化串口
+  Serial.begin(9600);
+  //初始化RFID
+  SPI.begin();
+  rfid.PCD_Init();
+  Serial.println("RC522初始化完成...");
+  
+  // 初始化舵机引脚
+  yawServo.attach(YAW_PIN);
+  clawServo.attach(CLAW_PIN);
+  gateServo.attach(GATE_PIN);
+  //初始化舵机角度
+   rotateYaw(YAW_ANGLE_0);
+  clawServo.write(0);
+  gateServo.write(GATE_CLOSE_ANGLE); //
+//delay(1000);
+//  gateServo.write(180); //GATE_CLOSE_ANGLE
+//delay(1000);
+//  gateServo.write(150); //GATE_CLOSE_ANGLE
+//delay(1000);
+//  gateServo.write(180); //GATE_CLOSE_ANGLE
+//delay(1000);
+  // 初始化步进电机引脚
+  pinMode(STEPPER_ENABLE_PIN, OUTPUT);
+  digitalWrite(STEPPER_ENABLE_PIN, LOW); // 使能
+
+  // 初始化有刷齿轮齿条电机引脚
+  pinMode(LINEAR_ACTUATOR_PIN1, OUTPUT);
+  pinMode(LINEAR_ACTUATOR_PIN2, OUTPUT);
+  pinMode(LINEAR_STBY_PIN,OUTPUT);
+  pinMode(LINEAR_PWM,OUTPUT);
+  digitalWrite(LINEAR_STBY_PIN,HIGH);
+  //stopLinearActuatorHorizon(); // 停止
+  startLinearActuatorHorizon(-R_DIR_VELOCITY,R_DIR_WHOLETIME);
+}
+
+// 循环函数
+void loop() {
+    //搜索新卡
+  if ( ! rfid.PICC_IsNewCardPresent())
+    {//Serial.println("搜索新卡失败...");
+    return;
+      }
+    
+  // 验证NUID是否可读
+  if ( ! rfid.PICC_ReadCardSerial())
+     {Serial.println("NUID不可读");
+    return;
+      }
+
+    MFRC522::PICC_Type piccType = rfid.PICC_GetType(rfid.uid.sak);
+
+  // 检查是否MIFARE卡类型
+  if (piccType != MFRC522::PICC_TYPE_MIFARE_MINI &&
+      piccType != MFRC522::PICC_TYPE_MIFARE_1K &&
+      piccType != MFRC522::PICC_TYPE_MIFARE_4K) {
+    Serial.println("不支持读取此卡类型");
+    return;
+  }
+  
+  // 读取RFID卡信息
+  String rfidTag = readRFID();
+
+  // 根据RFID卡信息判断目标位置
+  if (rfidTag == POSITION_1_RFID) {
+    //rotateYaw(YAW_ANGLE_1);
+    moveToPosition(POSITION_1_YAW_ANGLE, POSITION_1_LINEAR_POS,&bicycle_state[0]);
+  } else if (rfidTag == POSITION_2_RFID) {
+    //rotateYaw(YAW_ANGLE_2);
+    moveToPosition(POSITION_2_YAW_ANGLE, POSITION_2_LINEAR_POS,&bicycle_state[1]);
+  } else if (rfidTag == POSITION_3_RFID) {
+    //rotateYaw(YAW_ANGLE_3);
+    moveToPosition(POSITION_3_YAW_ANGLE, POSITION_3_LINEAR_POS,&bicycle_state[2]);
+  } else if (rfidTag == POSITION_4_RFID) {
+    moveToPosition(POSITION_4_YAW_ANGLE, POSITION_4_LINEAR_POS,&bicycle_state[3]);
+  } else if (rfidTag == POSITION_5_RFID) {
+    moveToPosition(POSITION_5_YAW_ANGLE, POSITION_5_LINEAR_POS,&bicycle_state[4]);
+  } else if (rfidTag == POSITION_6_RFID) {
+    moveToPosition(POSITION_6_YAW_ANGLE, POSITION_6_LINEAR_POS,&bicycle_state[5]);
+  } else if (rfidTag == POSITION_7_RFID) {
+    moveToPosition(POSITION_7_YAW_ANGLE, POSITION_7_LINEAR_POS,&bicycle_state[6]);
+  } else if (rfidTag == POSITION_8_RFID) {
+    moveToPosition(POSITION_8_YAW_ANGLE, POSITION_8_LINEAR_POS,&bicycle_state[7]);
+  } else if (rfidTag == POSITION_9_RFID) {
+    moveToPosition(POSITION_9_YAW_ANGLE, POSITION_9_LINEAR_POS,&bicycle_state[8]);
+  } else if (rfidTag == POSITION_10_RFID) {
+    moveToPosition(POSITION_10_YAW_ANGLE, POSITION_10_LINEAR_POS,&bicycle_state[9]);
+  } 
+
+  // 使放置在读卡区的IC卡进入休眠状态，不再重复读卡
+  rfid.PICC_HaltA();
+
+  // 停止读卡模块编码
+  rfid.PCD_StopCrypto1();
+  
+  // 延时等待下一次刷卡
+  delay(1000);
+}
+
+// 读取RFID卡信息的函数
+String readRFID() {
+  // TODO: 读取RFID卡信息的代码
+  // 保存读取到的UID
+  // 返回读取到的RFID卡信息 
+  for (byte i = 0; i < 4; i++) {
+    nuidPICC[i] = rfid.uid.uidByte[i];
+  }
+  //分别判断每张卡的UID
+  if(nuidPICC[0]==0x8A && nuidPICC[1]==0xB2 && nuidPICC[2]==0xFE && nuidPICC[3]==0x6C)
+  {
+    Serial.println("RFID_1");
+    return POSITION_1_RFID;
+  }
+  else if(nuidPICC[0]==0x4A && nuidPICC[1]==0xA1 && nuidPICC[2]==0x02 && nuidPICC[3]==0x6D)
+  {
+    Serial.println("RFID_2");
+    return POSITION_2_RFID;
+  }
+  else if(nuidPICC[0]==0x3A && nuidPICC[1]==0x53 && nuidPICC[2]==0x01 && nuidPICC[3]==0x6D)
+  {
+    Serial.println("RFID_3");
+    return POSITION_3_RFID;
+  }
+  else if(nuidPICC[0]==0xCA && nuidPICC[1]==0xEE && nuidPICC[2]==0x09 && nuidPICC[3]==0x6D)
+  {
+    Serial.println("RFID_4");
+    return POSITION_4_RFID;
+  }
+  else if(nuidPICC[0]==0xFA && nuidPICC[1]==0xB2 && nuidPICC[2]==0x01 && nuidPICC[3]==0x6D)
+  {
+    Serial.println("RFID_5");
+    return POSITION_5_RFID;
+  }
+  else if(nuidPICC[0]==0xAA && nuidPICC[1]==0x05 && nuidPICC[2]==0x0B && nuidPICC[3]==0x6D)
+  {
+    Serial.println("RFID_6");
+    return POSITION_6_RFID;
+  }
+  else if(nuidPICC[0]==0x9A && nuidPICC[1]==0x89 && nuidPICC[2]==0x02 && nuidPICC[3]==0x6D)
+  {
+    Serial.println("RFID_7");
+    return POSITION_7_RFID;
+  }
+  else if(nuidPICC[0]==0xEA && nuidPICC[1]==0xA8 && nuidPICC[2]==0x0A && nuidPICC[3]==0x6D)
+  {
+    Serial.println("RFID_8");
+    return POSITION_8_RFID;
+  }
+  else if(nuidPICC[0]==0x0A && nuidPICC[1]==0xF3 && nuidPICC[2]==0xFC && nuidPICC[3]==0x6E)
+  {
+    Serial.println("RFID_9");
+    return POSITION_9_RFID;
+  }
+  else if(nuidPICC[0]==0x0A && nuidPICC[1]==0xA2 && nuidPICC[2]==0x7D && nuidPICC[3]==0x6F)
+  {
+    Serial.println("RFID_10");
+    return POSITION_10_RFID;
+  }
+}
+
+// 移动到指定位置的函数
+void moveToPosition(int yawAngle, int linearPos,bool *bicycle_state) {
+  //取车
+  if(*bicycle_state == TAKE_BYCICLE_PRE)
+  {
+    //打印取车
+    Serial.println("取车TAKE_BYCICLE_PRE");
+
+    //默认位置为，一楼，对准门，齿轮齿条在头部，夹爪开，门关
+    //-------（1）buffer找位置------
+    //夹取自行车
+    closeClaw();delay(200);
+    
+    //齿轮齿条到中间（向后），防止干涉
+    startLinearActuatorHorizon(R_DIR_VELOCITY, R_DIR_WHOLETIME);delay(200);
+    
+    //上楼-控制步进电机移动到指定位置
+    moveLinearActuatorVertical(linearPos);delay(200);
+    
+    // 控制舵机旋转到指定角度
+    rotateYaw(yawAngle);delay(200);
+
+    //打开夹爪,准备夹取
+    openClaw();
+
+    // 到达位置等待夹取
+    delay(500);
+    
+    // 控制齿轮条电机回到头部-也就是初始位置（向前）
+    startLinearActuatorHorizon(-1.3*R_DIR_VELOCITY, 1 * R_DIR_WHOLETIME);delay(200);
+
+    //夹取自行车
+    closeClaw();
+
+    //等待夹取完成
+    delay(500);
+
+    //齿轮齿条到尾部（往后为正）
+    startLinearActuatorHorizon(1.3*R_DIR_VELOCITY, R_DIR_WHOLETIME);
+
+    //等待运动到齿条尾部完成
+    delay(500);
+
+    //-------（2）运送自行车------
+    
+    // 控制舵机回到初始角度
+    rotateYaw(yaw_orgin);delay(200);
+    
+    // 控制步进电机回到初始位置
+    moveLinearActuatorVertical(0);delay(200);
+
+
+    //-------（3）一楼对接------
+    //打开门
+    openGate();
+
+    //等待打开门完成
+    delay(500);
+
+    //齿轮齿条到头部（往前为负）
+    startLinearActuatorHorizon(-1.3*R_DIR_VELOCITY, 1*R_DIR_WHOLETIME);
+
+    //等待自行车停稳
+    delay(500);
+
+//    //齿轮齿条到头部（往前为负）
+//    startLinearActuatorHorizon(-1.5*R_DIR_VELOCITY, 1*R_DIR_WHOLETIME);
+//
+//    //等待自行车停稳
+//    delay(500);
+
+    //打开夹爪，松开物体
+    openClaw();
+
+    //等待三秒人取走自行车
+    delay(3000);
+
+    //关门
+    closeGate();
+
+    //将状态改为放车
+    *bicycle_state = PUT_BYCICLE_PRE;
+  }
+  //放车
+  else if(*bicycle_state == PUT_BYCICLE_PRE)
+  {
+    //打印放车
+    Serial.println("放车-PUT_BYCICLE_PRE");
+
+    //默认位置为，一楼，对准门，齿轮齿条在头部，夹爪开，门关
+    //-------（1）一楼对接------
+    //打开门
+    openGate();
+
+    //等待三秒人放置自行车
+    delay(3000);
+
+    //夹取自行车
+    closeClaw();
+
+    //等待夹取完成
+    delay(500);
+
+    //齿轮齿条到尾部（往后为正）
+    startLinearActuatorHorizon(1*R_DIR_VELOCITY, R_DIR_WHOLETIME);
+
+    //等待齿轮条移动到尾部完成
+    delay(500);
+
+    //关门
+    closeGate();
+
+    //-------（2）运送自行车------
+    //上楼-控制步进电机移动到指定位置
+    moveLinearActuatorVertical(linearPos);delay(200);
+   
+    // 控制舵机旋转到指定角度
+    rotateYaw(yawAngle);
+
+    //等待转动完成
+    delay(500);
+
+    //齿轮齿条到头部
+    startLinearActuatorHorizon(-1.4*R_DIR_VELOCITY, R_DIR_WHOLETIME);
+
+    //等待放车
+    delay(500);
+
+    //打开夹爪，松开物体
+    openClaw();delay(200);
+    
+    //齿轮齿条到中间
+    startLinearActuatorHorizon(1*R_DIR_VELOCITY, R_DIR_WHOLETIME/2);delay(200);
+
+    //闭合夹爪，防止干涉
+    closeClaw();
+
+    //齿轮齿条到后面
+    startLinearActuatorHorizon(1*R_DIR_VELOCITY, R_DIR_WHOLETIME/2);delay(200);
+
+    //等待齿轮齿条到后面
+    delay(500);
+    
+    //-------（3）buffer回到初始位置------
+
+    
+    // 控制舵机回到初始角度
+    rotateYaw(yaw_orgin);delay(200);
+    // 控制步进电机回到初始位置
+    moveLinearActuatorVertical(0);delay(200);
+
+    // 控制齿轮条电机回到头部-也就是初始位置
+    startLinearActuatorHorizon(-1.2*R_DIR_VELOCITY, 1.5*R_DIR_WHOLETIME);delay(200);
+
+    //打开夹爪-等待下一次夹取
+    openClaw();
+
+    //将状态改为取车
+    *bicycle_state = TAKE_BYCICLE_PRE;
+  } 
+}
+
+// 控制舵机旋转到指定角度（分步来）的函数
+void rotateYaw(int target_angle) {
+  int exe_time = 0;
+  int last_angle = 0;
+  int interval_angle = 2;
+  int interval_time = 50;
+  if((target_angle - yaw_right_angle) >= 0){
+    exe_time = (target_angle - yaw_right_angle) / interval_angle;
+    for(int i = 0; i < exe_time; i++){
+      rotateYaw_step(yaw_right_angle + i * interval_angle);
+      delay(interval_time);
+    }
+    rotateYaw_step(target_angle);
+  }
+  else if((target_angle - yaw_right_angle) < 0){
+    exe_time = (-target_angle + yaw_right_angle) / interval_angle;
+    for(int i = 0; i < exe_time; i++){
+      rotateYaw_step(yaw_right_angle - i * interval_angle);
+      delay(interval_time);
+    }
+    rotateYaw_step(target_angle);
+  }
+  delay(interval_time);
+  yaw_right_angle = target_angle;
+}
+
+// 控制舵机旋转到指定角度的底层函数
+void rotateYaw_step(int angle){
+  int pulseWidth = map(angle, 0, 360, 500, 2500); // 将角度映射到脉宽范围
+  yawServo.writeMicroseconds(pulseWidth);
+}
+
+// 控制步进电机移动到指定位置的函数(最后一定要回到初始位置,防止掉电后改变初始参考位置)
+void moveLinearActuatorVertical(int position) {
+  int difference=position-currentposition;
+  long int steps = map(abs(difference), 0, LINEAR_ACTUATOR_TRAVEL, 0, STEPS_MAX);
+  Serial.println(steps);
+  if (difference > 0) {
+    digitalWrite(STEPPER_DIR_PIN, HIGH); // 设置方向
+  } else {
+    digitalWrite(STEPPER_DIR_PIN, LOW); // 设置方向
+  }
+  for (int i = 0; i < abs(steps); i++) {
+    digitalWrite(STEPPER_STEP_PIN, HIGH);
+    delayMicroseconds(80); // 脉冲宽度
+    digitalWrite(STEPPER_STEP_PIN, LOW);
+    delayMicroseconds(80); // 脉冲间隔
+  }
+  currentposition=position;
+}
+
+// 控制有刷停止的函数
+void stopLinearActuatorHorizon() {
+  analogWrite(LINEAR_PWM,0);
+  digitalWrite(LINEAR_ACTUATOR_PIN1, LOW);
+  digitalWrite(LINEAR_ACTUATOR_PIN2, LOW);
+}
+
+// 控制有刷开始运动的函数
+void startLinearActuatorHorizon(int speed,int time_ms) {
+  if(speed>0)
+  {
+    analogWrite(LINEAR_PWM,speed);
+    digitalWrite(LINEAR_ACTUATOR_PIN1, HIGH);
+    digitalWrite(LINEAR_ACTUATOR_PIN2, LOW);
+  }
+  else
+  {
+    analogWrite(LINEAR_PWM,-speed);
+    digitalWrite(LINEAR_ACTUATOR_PIN1, LOW);
+    digitalWrite(LINEAR_ACTUATOR_PIN2, HIGH);
+  }
+  delay(time_ms);
+  stopLinearActuatorHorizon();
+}
+
+// 控制末端夹爪关闭的函数
+void closeClaw() {
+  clawServo.write(SERVO_MIN_ANGLE);
+  delay(1000);
+}
+
+// 控制末端夹爪打开的函数
+void openClaw() {
+  clawServo.write(SERVO_MAX_ANGLE);
+  delay(1000);
+}
+
+// 控制门打开的函数
+void openGate() {
+  gateServo.write(GATE_OPEN_ANGLE);
+  delay(1000); // 等待门打开
+}
+
+void closeGate()
+{
+  gateServo.write(GATE_CLOSE_ANGLE);
+  delay(1000); // 等待门打开  
+
